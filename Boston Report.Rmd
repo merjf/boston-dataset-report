@@ -1,0 +1,398 @@
+---
+title: "Studio di Analisi dei Dati"
+author: "Francesco Mergiotti"
+date: "25 settembre 2017"
+output: pdf_document
+toc: TRUE
+---
+\pagebreak
+
+# Introduzione al Dataset
+
+Il dataset studiato è una raccolta di 506 osservazioni riguardanti dati su proporzioni della popolazione della città di Boston. Ogni osservazione si riferisce a zone specifiche e riporta informazioni sullo status generale degli abitanti e sulle condizioni della zona stessa.
+
+Le features che compongono il dataset sono 13 e ora le vediamo in dettaglio:
+
+* CRIM - percentuale di crimine pro capite
+* ZN - proporzione della zona residenziale (25.000 sq.ft)
+* INDUS - proporzione di commercianti all'ingrosso
+* CHAS - zona limitata dal fiume Charles (1 se limitata, 0 altrimenti)
+* NOX - concentrazione di monossido d'azoto
+* RM - media di stanze per abitazione
+* AGE - percentuale di case costrutite prima del 1940 occupate dai proprietari
+* DIS - distanza media dai 5 centri di impiego di Boston
+* RAD - indice di accessibilità alle autostrade
+* TAX - Valore totale della tassa sulla proprietà x$10,000
+* PTRATIO - percentuale studente-insegnante
+* BLACK - 1000(Bk - 0.63)^2 dove Bk è la percentuale di neri in città
+* LSTAT - percentuale di popolazione con un basso status sociale
+* MEDV - Valore medio delle case occupate x$1,000
+
+## Pulizia Dati
+
+```{r upload dataset, include=FALSE}
+library(MASS)
+library(ROCR)
+library(pROC)
+library(lattice)
+library(ggplot2)
+library(caret)
+BB = Boston
+```
+Si è eliminata la colonna nox, che rappresenta la concentrazione di monossido d'azoto, che ai fini dello studio del suddetto dataset è poco rilevante. 
+Abbiamo inoltre modificato la colonna zn relativa alla proporzione della zona residenziale ogni 25.000 piedi quadrati, convertita in metri quadrati.
+La colonna dis è stata riportata da miglia a km. 
+
+```{r puliziaDati, echo=FALSE, include=FALSE}
+BB$nox <- NULL
+BB$zn <- (BB$zn/2322.576)*25000
+BB$dis <- BB$dis * 1.60934
+library(dplyr)
+BB <- rename(BB,  ValoreCase = medv,
+            PercOccupati = age,
+            nStanze = rm,
+            Poverta = lstat,
+            CrimRatio = crim)
+```
+\pagebreak
+
+# Analisi iniziale dei dati
+
+L'analisi sommaria iniziale è stata svolta considerando delle features che, a nostro parere, sono sembrate più significative di altre.
+Di seguito riportiamo qualche plot.
+
+```{r , echo=FALSE}
+{par(mfrow=c(2,2))
+hist(BB$ValoreCase, xlim=c(0,50), breaks=20, col="blue", xlab="Valore medio delle case", ylab="Frequenza", main="")
+plot(BB$CrimRatio~BB$Poverta, xlab="Crime Ratio pro capite", ylab="Percentuale di Povertà",  pch=20, col="red")
+plot(BB$ValoreCase~BB$Poverta, xlab="Valore medio delle case", ylab="Percentuale di Povertà",  pch=20, col="green")
+plot(BB$CrimRatio~BB$dis, xlab="Crime Ratio pro capite", ylab="Distanza vs punti di impiego", pch=20, col="orange")}
+```
+
+## Prime osservazioni
+
+Le prime osservazione sono state sviluppate considerando le feature più significative:
+
+- Valore medio delle case di Boston
+- Percentuale dello status sociale basso 
+- Ratio del crimine pro capite
+
+\pagebreak
+
+## Correlazione tra valore medio delle case e la percentuale di povertà
+
+Una prima correlazione, che è saltata all'occhio analizzando il dataset, è quella tra il valore medio delle case di Boston e lo status sociale della popolazione. Entrambi, infatti, sono sufficientemente correlati, come si può notare dal primo plot sperimentale:
+
+```{r, echo=FALSE}
+plot(BB$ValoreCase,BB$Poverta, xlab="Valore medio delle case",ylab="Percentuale di Povertà", pch=20, col="blue")
+```
+Abbiamo eseguito la prova del nove utilizzando i coefficienti di Pearson e Spearman, il secondo è stato utilizzato per rafforzare la correlazione.
+
+```{r, echo=FALSE}
+pearsonMValueStatus <- cor(BB$ValoreCase,BB$Poverta, method="pearson")
+
+fit <- lm(BB$ValoreCase~BB$Poverta)
+{plot(BB$ValoreCase,BB$Poverta,
+     xlab="Valore medio delle case",ylab="Percentuale di Povertà", 
+     main=c("Pearson=",as.character(format(pearsonMValueStatus,digits=4))),
+     pch=20, col="orange")
+abline(fit$coefficients,col="blue",lwd=2)}
+```
+Il primo coefficiente da un valore di -0.74, in accordo con il primo fit stampato poco sopra. 
+
+```{r}
+cor(BB$ValoreCase,BB$Poverta, method="spearman")
+```
+Spearman rafforza questa correlazione portando il valore a -0.85, dando un ottimo risultato.
+Da questa prima analisi possiamo dedurre che lo status sociale della popolazione è direttamente correlato con il valore medio delle case di Boston. Vale anche il viceversa.
+
+Abbiamo scoperto che MEDV e LSTAT sono fortemente correlato, quindi possiamo prevedere la percentuale dello status sociale basso della popolazione in base al valore medio delle case.
+
+## Correlazione crimine e valore medio delle case
+
+Abbiamo anche studiato la relazione tra il tasso di crimine e il valore medio delle case.
+Il risultato è stato deludente e poco convincente.
+```{r}
+cor(BB$CrimRatio,BB$ValoreCase, method="pearson")
+```
+Pressochè bassa la correlazione. Scartiamo questa opzione di verifica.
+
+\pagebreak
+
+# Studio dei regressori
+
+Abbiamo studiato quali regressori potrebbero prevedere al meglio lo Status sociale basso della popolazione.
+Il confronto con le altre feature è riassunto in questo plot:
+
+```{r, echo=FALSE}
+pearsonC <- vector()
+for(i in 1:13)
+{pearsonC[i] <- cor(BB$Poverta, BB[,i], method="pearson")}
+names(pearsonC)<-c("% Crime","Zona Resid.","Indust.","Fiume","nStanze","% Case","Dist","Autostrada","Tassa Prop.","Stud-Inseg","% Neri","Povertà","ValoreCase")
+{plot(pearsonC,type="h",ylim=c(-1,1),ylab="Coefficienti",xlab="",main="Coeff. di Pearson tra Perc. Povertà e le altre features")
+abline(h=0.5, col="blue")
+abline(h=-0.5, col="blue")
+abline(h=0,col="red",lwd=5)
+text(seq(1,13),rep(0.3,1),names(pearsonC),srt=45)}
+```
+Da questa analisi possiamo considerare le features che superano la soglia arbitrariamente fissata da noi a -0.5 e 0.5.
+Nelle analisi future considereremo le seguenti componenti:
+
+* Valore medio delle case = -0.7376
+* N stanze per abitazione = 0.6138
+* Industrie = 0.6037
+* % case abitate dai proprietari = -0.6023
+* Tassa sulla proprietà = 0.5439
+* Distanza dai centri di impiego di Boston = -0.4969
+
+Vogliamo prevedere la percentuale di persone che versano in un basso stato sociale utilizzando questi parametri.
+Possiamo quindi definire un nuovo campo come livello di povertà con questi 4 attributi:
+
+* 1% - 5% : povertà inesistente
+* 6% - 12% : povertà bassa
+* 13% - 20% : povertà discreta
+* 21% - 27% : povertà accentuata
+* 28% - 39% : povertà elevata 
+
+```{r, echo=FALSE, include=FALSE}
+BB$LivelloPoverta <- cut(BB$Poverta,breaks=c(0,5,12,20,27,39),labels=c("inesistente","bassa","discreta","accentuata","elevata"))
+{
+  h <- hist(BB$Poverta, breaks=c(0,5,12,20,27,39), xlab="", col="red", freq=TRUE, ylim=c(0,250), main="Percentuale di povertà")
+  axis(1, h$mids, labels=c("inesistente","bassa","discreta","accentuata","elevata"), tick = FALSE, padj = 3)
+}
+```
+## Compressione del dataset
+
+Abbiamo notato con l'analisi precedente che per prevedere la percentuale della feature LSTAT, necessitiamo di 5 componenti su 12 totali. Possiamo dunque ridurre il nostro dataset e cercare di sfoltire la mole di dati su cui lavoriamo. Il metodo che abbiamo utilizzato è la Principal Component Analysis - PCA.
+
+```{r, echo=FALSE}
+BBsub<-subset(BB,select=c(CrimRatio, zn, indus, chas, nStanze, PercOccupati, dis, rad, tax, ptratio, black, Poverta, ValoreCase))
+BBpca<-princomp(BBsub)
+plot(BBpca, col="yellow", main="Percentuale delle componenti")
+```
+Con questo plot riusciamo a vedere che le prime 3 componenti riescono a spiegare ben il 99,38 % del dataset.
+Dunque procediamo a sfoltire il nostro malloppo di dati tenendo solo le prime 3.
+Qui di seguito riporto i grafici della percentuale di spiegazione 
+
+```{r, echo=FALSE}
+BBcompressed <- data.frame(comp1=BBpca$scores[1:506,1],
+                           comp2=BBpca$scores[1:506,2],
+                           comp3=BBpca$scores[1:506,3])
+pearsonLstat <- c(cor(BB$Poverta,BBcompressed$comp1),
+                  cor(BB$Poverta,BBcompressed$comp2),
+                  cor(BB$Poverta,BBcompressed$comp3))
+
+index1=BB$LivelloPoverta=="inesistente"
+index2=BB$LivelloPoverta=="bassa"
+index3=BB$LivelloPoverta=="discreta"
+index4=BB$LivelloPoverta=="accentuata"
+index5=BB$LivelloPoverta=="elevata"
+{par(mfrow=c(1,3))
+plot(BBcompressed$comp1[index1],BB$Poverta[index1],
+     xlab="Componente Uno",
+     ylim = c(1,40),
+     xlim = c(-1000, 250),
+     ylab="Percentuale Povertà",
+     pch=20,
+     cex=2)
+points(BBcompressed$comp1[index2],BB$Poverta[index2],col="red",pch=20,cex=2)
+points(BBcompressed$comp1[index3],BB$Poverta[index3],col="blue",,pch=20,cex=2)
+points(BBcompressed$comp1[index4],BB$Poverta[index4],col="green",,pch=20,cex=2)
+points(BBcompressed$comp1[index5],BB$Poverta[index5],col="yellow",,pch=20,cex=2)
+
+plot(BBcompressed$comp2[index1],BB$Poverta[index1],
+     xlab="Componente Due",
+     ylim = c(1,40),
+     xlim = c(-1000, 250),
+     ylab="Percentuale Povertà",
+     pch=20,
+     cex=2)
+points(BBcompressed$comp2[index2],BB$Poverta[index2],col="red",pch=20,cex=2)
+points(BBcompressed$comp2[index3],BB$Poverta[index3],col="blue",,pch=20,cex=2)
+points(BBcompressed$comp2[index4],BB$Poverta[index4],col="green",,pch=20,cex=2)
+points(BBcompressed$comp2[index5],BB$Poverta[index5],col="yellow",,pch=20,cex=2)
+
+
+plot(BBcompressed$comp3[index1],BB$Poverta[index1],
+     xlab="Componente Tre",
+     ylim = c(1,40),
+     xlim = c(-1000, 250),
+     ylab="Percentuale Povertà",
+     pch=20,
+     cex=2)
+points(BBcompressed$comp3[index2],BB$Poverta[index2],col="red",pch=20,cex=2)
+points(BBcompressed$comp3[index3],BB$Poverta[index3],col="blue",,pch=20,cex=2)
+points(BBcompressed$comp3[index4],BB$Poverta[index4],col="green",,pch=20,cex=2)
+points(BBcompressed$comp3[index5],BB$Poverta[index5],col="yellow",,pch=20,cex=2)
+}
+```
+
+## Osservazione
+Avremo potuto tenere solo le prime due componenti e ricavare un risultato del 93%.
+Considerando che la mole di dati è bassa e con l'aggiunta di un'altra componente si arriva a spiegare il 99% del dataset, si è deciso di includere anche la terza componente, che funge in questo caso da cornice per il nostro quadro.
+
+\pagebreak
+
+# Classificatori
+
+In questa fase dello studio di questo dataset, tentiamo di utilizzare vari metodi per spiegare e prevedere la feature LSTAT.
+
+## Regressione Lineare
+
+Il primo modello che utilizziamo è la regressione lineare tra LSTAT e le 3 Principal Components.
+
+```{r, echo=FALSE}
+BBcompressed$Poverta<-BB$Poverta
+linearModel <- lm(BBcompressed$Poverta~.,data=BBcompressed)
+summary(linearModel)
+```
+Da questi dati emerge che la terza componente, che prima avevamo incluso per poter arrivare a una percentuale prossima al 100%, in effetti è totalmente inutile nel predire la nostra feature LSTAT, quindi andrà scartata nei prossimi studi.
+
+## Regressione Logistica
+
+```{r, echo=FALSE}
+I=BB$LivelloPoverta=="bassa"|BB$LivelloPoverta=="accentuata"
+BBlogistic <- data.frame(livelloPoverta=as.numeric(BB$LivelloPoverta[I]),
+                          comp1=BBcompressed$comp1[I])
+logisticModel <- glm(BBlogistic$livelloPoverta~., data=BBlogistic)
+{par(mfrow=c(2,2))
+plot(logisticModel)}
+```
+
+La regressione logistica ci da delle informazioni riguardo due livelli di povertà, bassa e accentuata.
+Possiamo vedere Nel primo grafico come siano lineare e con pochi "outliers".
+Nel quarto grafico invece notiamo sempre una linearità tra i dati con qualche osservazione in alto a destra che si discosta.
+\pagebreak
+
+## Albero decisionale
+
+Con questo terzo metodo vogliamo prevedere i 5 livelli di povertà sfruttando le feature: MEDV, RM e AGE.
+Costruiamo quindi un training set - TS e un control set - CS di 253 osservazioni ciascuno, infine applichiamo il DT.
+
+```{r, echo=FALSE}
+TS=sample(506,size=253,replace=FALSE)
+CS=setdiff(1:506,TS)
+
+library(rpart)
+library(rpart.plot)
+decisionTree=rpart(LivelloPoverta[TS]~ValoreCase[TS]+PercOccupati[TS]+nStanze[TS], data=BB, method="class")
+{
+  rpart.plot(decisionTree, type = 1, extra= 0)
+}
+
+```
+Il plot prodotto sopra è la rappresentazione grafica dell'albero decisionale per prevedere la percentuale di povertà.
+Di seguito riportiamo la matrice di confusione sul Control Set.
+
+```{r, echo=FALSE}
+decisionTree=rpart(BB$LivelloPoverta[TS]~BB$ValoreCase[TS]+BB$PercOccupati[TS]+BB$nStanze[TS], data=BB, method="class")
+tmp <- data.frame(BB$ValoreCase[CS],BB$PercOccupati[CS],BB$nStanze[CS])
+dataTree = predict(decisionTree, tmp, type = "class")
+matriceConfusione = data.frame(dataTree, BB$LivelloPoverta[CS])
+table(matriceConfusione)
+```
+
+La predizione porta ad una discreta matrice di confusione.
+Troviamo punti di picco nelle colonne di inesistente, bassa e discreta povertà. 
+
+
+\pagebreak
+
+## Algoritmo K-NN
+
+Un altro metodo che abbiamo utilizzato per classificare la percentuale di povertà è quello dell'algoritmo K-NN. Le prove sono state fate per k=1,5,7.
+
+```{r, echo=FALSE, include=FALSE}
+library(class)
+trainSet = data.frame(BB$ValoreCase[TS],BB$PercOccupati[TS],BB$nStanze[TS])
+controlSet = data.frame(BB$ValoreCase[CS],BB$PercOccupati[CS],BB$nStanze[CS])
+livelli=BB$LivelloPoverta[TS]
+Kvalue = knn(trainSet, controlSet, livelli , k=7)
+matriceConfusione = data.frame(Kvalue, BB$LivelloPoverta[CS])
+table(matriceConfusione)
+```
+
+La matrice di confusione dell'algoritmo K-NN è di certo migliore del modello dell'albero decisionale. 
+Il risultato riportato sopra si riferisce a k=7. Abbiamo notato che aumentando i k, la matrice tende ad avere i risultati maggiori lungo la diagonale.
+
+In basso possiamo apprezzare la rappresentazione grafica del risultato dell'algoritmo. 
+
+```{r, echo=FALSE, include=FALSE}
+plot(Kvalue, ylim=c(1,140), col="green")
+```
+
+```{r, echo=FALSE}
+BB$TipoPoverta <- (BB$Poverta > 13) 
+BB$TipoPoverta <- factor(BB$TipoPoverta, labels = c("yes", "no"))
+
+trainSet = data.frame(BB$ValoreCase[TS],BB$PercOccupati[TS],BB$nStanze[TS],BB$TipoPoverta[TS])
+controlSet = data.frame(BB$ValoreCase[CS],BB$PercOccupati[CS],BB$nStanze[CS],BB$TipoPoverta[CS])
+ctrl <- trainControl(method="repeatedcv",repeats = 3)
+knnFit <- train(BB.TipoPoverta.TS. ~ ., data = trainSet, method = "knn", trControl = ctrl, tuneLength = 15)
+
+plot(knnFit)
+```
+L'accuratezza del nostro algoritmo è abbastanza elevata e si avvicina verso lo 0.90% con k=15. Tende ad abbassarsi anche se rimane pressochè costante prendendo k =[17,35].
+
+\pagebreak
+
+# Curva ROC - Qualità del classificatore
+
+In questo capitolo verifichiamo la bontà dei 2 modelli utilizzati precedentemente. Per facilitare i calcoli si è scelta una soglia di povertà pari al 13%, e abbiamo aggiunto una colonna che definisce questa separazione tra i livelli:
+
+- Livello di Povertà > 13% : povertà non trascurabile
+- Livello di Povertà < 13% : povertà trascurabile
+
+## Bontà del Decision Tree
+
+Studio della bontà dell'albero decisionale.
+
+```{r, echo=FALSE}
+decisionTree=rpart(BB$TipoPoverta[TS]~BB$ValoreCase[TS]+BB$PercOccupati[TS]+BB$nStanze[TS], data=BB, method="class")
+pre = predict(decisionTree, newdata <- data.frame(BB$ValoreCase[TS]+BB$PercOccupati[TS]+BB$nStanze[TS]), type = "prob")[,2]
+predizione <- prediction(pre, BB$TipoPoverta[TS])
+roc <- performance(predizione,"fpr", "tpr")
+
+curvaRoc <- as.numeric(performance(predizione,"auc")@y.values)
+{plot(roc, type='o', main = paste('Area della Curva ROC = ', round(curvaRoc,2)), col="blue")  
+abline(a=0, b= 1, col="red")}
+
+```
+
+Da questo grafico possiamo notare che la nostra scelta di classificare il livello di povertà scegliendo le 3 features ValoreCase, PercOccupati e nStanze, produce un'ottima curva ROC, infatti possiamo notare che l'area che si crea sopra la diagonale è sufficientemente grande.
+
+\pagebreak
+
+## Bontà del K-NN
+
+Infine studiamo la bontà dell'algoritmo K-NN.
+
+
+```{r, echo=FALSE}
+
+knnPredict <- predict(knnFit, newdata = trainSet , type="prob")
+
+knnROC <- roc(trainSet$BB.TipoPoverta.TS., knnPredict[,"yes"])
+
+
+
+{plot(knnROC$specificities, knnROC$sensitivities, type="o", col="blue", ylab="Sensitivities", xlab="Specificities", main="Curva ROC K-NN algorithm")  
+abline(a=0, b= 1, col="red")}
+```
+
+In questo plot appena prodotto possiamo notare che la Curva ROC con le due grandezze inversamente proporzionali, Sensitivities e Specificities, danno, come punto di massimo, un risultato di 0.87. 
+Questo valore da un peso ben specifico al nostro classificatore, infatti esso è ben bilanciato sia sulla specificità dei dati che osserva, sia sull'accuratezza degli stessi.
+
+\pagebreak
+
+# Conclusioni
+
+In conclusione, il nostro classificatore che si pone di etichettare le osservazioni in base alla percentuale di povertà, si comporta molto bene sia utilizzando le Principal Components sia attraverso l'algoritmo KNN.
+Un risultato inaspettato è stato registrato con l'utilizzo dell'albero decisionale, che prima, osservando la matrice di confusione, ha prodotto dei valori "outliers" e discordanti, poi con la prova della curva ROC è stato valutato positivo e attendibile, anche se il valore della bontà rimane minore rispetto a quello registrato dall'algoritmo K-NN.
+
+Il dataset Boston, composto da 13 features, può essere spiegato utilizzando solo 3 o addirittura 2 di queste:
+
+- Valore medio delle case 
+- Percentuale delle case costruite prima del 1940 e occupate dagli stessi proprietari
+
+I livelli di povertà maggiori che abbiamo registrato sono pressochè bassi. Il maggiore rilevato è quello di "bassa povertà", valore compreso tra il 6% e il 12%. 
